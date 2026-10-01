@@ -118,7 +118,6 @@ async function initDb(dbPath = config.DB_PATH) {
               )
             `, (tableErr) => {
               if (tableErr) return reject(tableErr);
-              console.log(`[Database] SQLite connected at "${dbPath}".`);
               resolve(db);
             });
           });
