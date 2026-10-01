@@ -1,0 +1,34 @@
+{
+  "name": "webhook-delivery-engine",
+  "version": "1.0.0",
+  "description": "Custom Webhook Delivery Engine with HMAC signing, retry scheduling, and failure handling",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node src/index.js",
+    "test": "jest --runInBand --detectOpenHandles"
+  },
+  "keywords": [
+    "webhook",
+    "delivery-engine",
+    "retry-scheduler",
+    "hmac",
+    "sqlite"
+  ],
+  "author": "Nestack Assessment Submission",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "sqlite3": "^5.1.7"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^7.0.0"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testTimeout": 10000
+  }
+}

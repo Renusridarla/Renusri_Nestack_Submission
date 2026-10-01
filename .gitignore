@@ -1,0 +1,7 @@
+node_modules/
+.env
+webhook_engine.db
+webhook_engine.db-journal
+*.log
+coverage/
+*.zip
