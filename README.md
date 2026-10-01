@@ -2,10 +2,13 @@
 
 > **Nestack SDE Technical Assessment** — A resilient, production-ready custom Webhook Delivery Engine built in Node.js & SQLite with zero external queue libraries. Features automatic retries with custom interval scheduling, HMAC-SHA256 signature verification, status visibility APIs, and manual dead-event recovery.
 
+🌐 **Live Deployment Link:** [https://internship-olive-xi.vercel.app](https://internship-olive-xi.vercel.app)
+
 ---
 
 ## 📋 Table of Contents
 - [Overview & Key Features](#-overview--key-features)
+- [Live Deployment Link](#-live-deployment-link)
 - [Architecture & Design](#-architecture--design)
 - [Delivery Rules & Retry Schedule](#-delivery-rules--retry-schedule)
 - [Server Restart Behavior](#-server-restart-behavior)
@@ -14,6 +17,17 @@
 - [Getting Started & Installation](#-getting-started--installation)
 - [Running Tests](#-running-tests)
 - [Evaluation & Submission Info](#-evaluation--submission-info)
+
+---
+
+## 🌐 Live Deployment Link
+
+The Webhook Delivery Engine is deployed live on Vercel:
+
+- **Base URL:** `https://internship-olive-xi.vercel.app`
+- **List Events:** `GET https://internship-olive-xi.vercel.app/events`
+- **Ingest Event:** `POST https://internship-olive-xi.vercel.app/events`
+- **Cron Tick Endpoint:** `GET https://internship-olive-xi.vercel.app/api/cron`
 
 ---
 
@@ -51,7 +65,7 @@ The system runs as a unified service hosting both the API Web Server and the Bac
                        +-------------------------+
                                     |
           +-------------------------+-------------------------+
-          | (Immediate trigger)                               | (Background Worker Tick)
+          | (Immediate trigger)                               | (Background Worker Tick / Cron)
           v                                                   v
 +---------------------------------------------------------------------------------+
 |                            Webhook Delivery Engine                              |
@@ -175,7 +189,7 @@ def verify_webhook(payload_dict, signature_header, secret_key):
     "amount": 2500,
     "currency": "INR"
   },
-  "webhook_url": "http://localhost:3000/test-webhook/success"
+  "webhook_url": "https://internship-olive-xi.vercel.app/test-webhook/success"
 }
 ```
 
@@ -189,7 +203,7 @@ def verify_webhook(payload_dict, signature_header, secret_key):
     "amount": 2500,
     "currency": "INR"
   },
-  "webhook_url": "http://localhost:3000/test-webhook/success",
+  "webhook_url": "https://internship-olive-xi.vercel.app/test-webhook/success",
   "status": "pending",
   "created_at": "2026-10-01T17:45:00.000Z",
   "attempts": []
@@ -208,7 +222,7 @@ def verify_webhook(payload_dict, signature_header, secret_key):
     "id": "evt_8f3d1a9b-1234-4567-89ab-cdef01234567",
     "type": "payment.failed",
     "payload": { "order_id": "ord_9948" },
-    "webhook_url": "http://localhost:3000/test-webhook/success",
+    "webhook_url": "https://internship-olive-xi.vercel.app/test-webhook/success",
     "status": "delivered",
     "created_at": "2026-10-01T17:45:00.000Z",
     "attempts": [
@@ -233,7 +247,7 @@ def verify_webhook(payload_dict, signature_header, secret_key):
   "id": "evt_8f3d1a9b-1234-4567-89ab-cdef01234567",
   "type": "user.signup",
   "payload": { "user_id": 42 },
-  "webhook_url": "http://localhost:3000/test-webhook/fail",
+  "webhook_url": "https://internship-olive-xi.vercel.app/test-webhook/fail",
   "status": "failed",
   "created_at": "2026-10-01T17:45:00.000Z",
   "attempts": [
@@ -254,19 +268,6 @@ def verify_webhook(payload_dict, signature_header, secret_key):
 - Returns `200 OK` with re-queued event object if status was `dead`.
 - Returns `400 Bad Request` if status is not `dead`.
 
-**Success Response (200 OK):**
-```json
-{
-  "id": "evt_dead_123",
-  "type": "payment.failed",
-  "payload": { "order_id": "ord_9948" },
-  "webhook_url": "http://localhost:3000/test-webhook/success",
-  "status": "pending",
-  "created_at": "2026-10-01T17:00:00.000Z",
-  "attempts": [...]
-}
-```
-
 ---
 
 ## 💻 Getting Started & Installation
@@ -279,8 +280,8 @@ def verify_webhook(payload_dict, signature_header, secret_key):
 
 1. **Clone or extract repository**:
    ```bash
-   git clone https://github.com/yourusername/yourName_Nestack_Submission.git
-   cd yourName_Nestack_Submission
+   git clone https://github.com/Renusridarla/Renusri_Nestack_Submission.git
+   cd Renusri_Nestack_Submission
    ```
 
 2. **Install dependencies**:
@@ -288,24 +289,14 @@ def verify_webhook(payload_dict, signature_header, secret_key):
    npm install
    ```
 
-3. **Configure Environment Variables** (Optional):
-   Create a `.env` file from `.env.example`:
-   ```bash
-   cp .env.example .env
-   ```
-
-4. **Start the API Server and Delivery Engine Worker**:
+3. **Start the API Server and Delivery Engine Worker**:
    ```bash
    npm start
    ```
 
-   *The API server and background delivery worker will start concurrently on port 3000.*
-
 ---
 
 ## 🧪 Running Tests
-
-The project includes an automated test suite using Jest and Supertest that tests ingestion, HMAC signing, immediate attempts, failure intervals, dead status transitions, and manual retries:
 
 ```bash
 npm test
@@ -315,11 +306,11 @@ npm test
 
 ## 📌 Evaluation & Submission Info
 
-- **Repository**: `{yourName_Nestack_Submission}` (Private GitHub Repository)
+- **GitHub Repository**: [https://github.com/Renusridarla/Renusri_Nestack_Submission](https://github.com/Renusridarla/Renusri_Nestack_Submission)
+- **Live Deployment Link**: [https://internship-olive-xi.vercel.app](https://internship-olive-xi.vercel.app)
 - **Required Evaluator Contributors**:
   - `bishal@nestack.com`
   - `sannidhya@nestack.com`
   - `sanjay@nestack.com`
 - **Submission Artifacts**:
-  - Complete Codebase ZIP File: `yourName_Nestack_Submission.zip`
-  - Live Deployment Link: Included in submission platform
+  - Complete Codebase ZIP File: `Renusri_Nestack_Submission.zip`

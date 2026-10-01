@@ -37,9 +37,18 @@ router.post('/events', async (req, res) => {
     // Create event in database
     const event = await db.createEvent({ type, payload, webhook_url });
 
-    // Trigger immediate delivery attempt without waiting for retry interval
-    setImmediate(() => {
-      engine.triggerImmediate(event.id);
+    // Trigger immediate delivery attempt asynchronously
+    setImmediate(async () => {
+      try {
+        const database = db.getDb();
+        database.get('SELECT * FROM events WHERE id = ?', [event.id], async (err, row) => {
+          if (!err && row && (row.status === 'pending' || row.status === 'failed')) {
+            await engine.processEvent(row);
+          }
+        });
+      } catch (e) {
+        // Ignore async delivery errors during teardown
+      }
     });
 
     return res.status(201).json(event);
@@ -107,8 +116,17 @@ router.post('/events/:id/retry', async (req, res) => {
     }
 
     // Trigger immediate attempt
-    setImmediate(() => {
-      engine.triggerImmediate(eventId);
+    setImmediate(async () => {
+      try {
+        const database = db.getDb();
+        database.get('SELECT * FROM events WHERE id = ?', [eventId], async (err, row) => {
+          if (!err && row && (row.status === 'pending' || row.status === 'failed')) {
+            await engine.processEvent(row);
+          }
+        });
+      } catch (e) {
+        // Ignore async errors
+      }
     });
 
     const updatedEvent = await db.getEventById(eventId);
@@ -116,6 +134,29 @@ router.post('/events/:id/retry', async (req, res) => {
   } catch (err) {
     console.error(`Error retrying event ${req.params.id}:`, err);
     return res.status(500).json({ error: 'Internal server error while retrying event.' });
+  }
+});
+
+/**
+ * GET /cron or GET /api/cron
+ * Trigger scheduled retries tick (Vercel Cron compatible)
+ */
+router.get(['/cron', '/api/cron'], async (req, res) => {
+  try {
+    const dueEvents = await db.getDueEvents();
+    let processedCount = 0;
+    for (const eventRow of dueEvents) {
+      await engine.processEvent(eventRow);
+      processedCount++;
+    }
+    return res.status(200).json({
+      message: 'Cron tick executed successfully',
+      processed_events: processedCount,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err) {
+    console.error('Error executing cron tick:', err);
+    return res.status(500).json({ error: 'Failed to execute cron tick.' });
   }
 });
 

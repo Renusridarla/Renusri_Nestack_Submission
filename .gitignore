@@ -5,3 +5,5 @@ webhook_engine.db-journal
 *.log
 coverage/
 *.zip
+
+.vercel
