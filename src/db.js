@@ -1,259 +1,279 @@
 const sqlite3 = require('sqlite3').verbose();
-const { v4: uuidv4 } = require('crypto'); // Built-in crypto.randomUUID or uuid fallback
+const { Pool } = require('pg');
 const config = require('./config');
 
 let db = null;
+let pgPool = null;
+let isPg = false;
 
 /**
- * Initialize SQLite Database connection and create tables
- * @param {string} [dbPath] - Database file path or ':memory:'
- * @returns {Promise<sqlite3.Database>}
+ * Helper to convert SQL query with ? placeholders into $1, $2, ... for PostgreSQL
  */
-function initDb(dbPath = config.DB_PATH) {
-  return new Promise((resolve, reject) => {
-    db = new sqlite3.Database(dbPath, (err) => {
-      if (err) {
-        return reject(err);
+function prepareSql(sql) {
+  if (!isPg) return sql;
+  let count = 0;
+  return sql.replace(/\?/g, () => `$${++count}`);
+}
+
+/**
+ * Execute a SQL query (works seamlessly across SQLite and PostgreSQL)
+ */
+function query(sql, params = []) {
+  if (isPg) {
+    const formattedSql = prepareSql(sql);
+    return pgPool.query(formattedSql, params).then(res => res.rows);
+  } else {
+    return new Promise((resolve, reject) => {
+      const trimmed = sql.trim().toUpperCase();
+      if (trimmed.startsWith('SELECT')) {
+        db.all(sql, params, (err, rows) => {
+          if (err) return reject(err);
+          resolve(rows || []);
+        });
+      } else {
+        db.run(sql, params, function(err) {
+          if (err) return reject(err);
+          resolve({ lastID: this.lastID, changes: this.changes, rowCount: this.changes });
+        });
       }
-      
-      db.run('PRAGMA foreign_keys = ON;', (fkErr) => {
-        if (fkErr) return reject(fkErr);
+    });
+  }
+}
 
-        db.serialize(() => {
-          // Create events table
-          db.run(`
-            CREATE TABLE IF NOT EXISTS events (
-              id TEXT PRIMARY KEY,
-              type TEXT NOT NULL,
-              payload TEXT NOT NULL,
-              webhook_url TEXT NOT NULL,
-              status TEXT NOT NULL DEFAULT 'pending',
-              created_at TEXT NOT NULL,
-              next_retry_at TEXT,
-              retry_count INTEGER NOT NULL DEFAULT 0
-            )
-          `);
+/**
+ * Initialize Database connection (PostgreSQL if DATABASE_URL is set, otherwise SQLite)
+ */
+async function initDb(dbPath = config.DB_PATH) {
+  const connectionString = process.env.DATABASE_URL || process.env.POSTGRES_URL;
 
-          // Create attempts table
-          db.run(`
-            CREATE TABLE IF NOT EXISTS attempts (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              event_id TEXT NOT NULL,
-              attempted_at TEXT NOT NULL,
-              http_status INTEGER,
-              outcome TEXT NOT NULL,
-              FOREIGN KEY (event_id) REFERENCES events (id) ON DELETE CASCADE
-            )
-          `, (tableErr) => {
-            if (tableErr) return reject(tableErr);
-            resolve(db);
+  if (connectionString && (connectionString.startsWith('postgres://') || connectionString.startsWith('postgresql://'))) {
+    isPg = true;
+    console.log('[Database] Connecting to PostgreSQL database...');
+    pgPool = new Pool({
+      connectionString: connectionString,
+      ssl: process.env.DB_SSL === 'false' ? false : { rejectUnauthorized: false }
+    });
+
+    // Test connection
+    await pgPool.query('SELECT 1');
+
+    // Create events table
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS events (
+        id VARCHAR(255) PRIMARY KEY,
+        type VARCHAR(255) NOT NULL,
+        payload TEXT NOT NULL,
+        webhook_url TEXT NOT NULL,
+        status VARCHAR(50) NOT NULL DEFAULT 'pending',
+        created_at VARCHAR(100) NOT NULL,
+        next_retry_at VARCHAR(100),
+        retry_count INT NOT NULL DEFAULT 0
+      )
+    `);
+
+    // Create attempts table
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS attempts (
+        id SERIAL PRIMARY KEY,
+        event_id VARCHAR(255) NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+        attempted_at VARCHAR(100) NOT NULL,
+        http_status INT,
+        outcome VARCHAR(50) NOT NULL
+      )
+    `);
+
+    console.log('[Database] PostgreSQL tables initialized.');
+    return pgPool;
+  } else {
+    isPg = false;
+    return new Promise((resolve, reject) => {
+      db = new sqlite3.Database(dbPath, (err) => {
+        if (err) return reject(err);
+
+        db.run('PRAGMA foreign_keys = ON;', (fkErr) => {
+          if (fkErr) return reject(fkErr);
+
+          db.serialize(() => {
+            db.run(`
+              CREATE TABLE IF NOT EXISTS events (
+                id TEXT PRIMARY KEY,
+                type TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                webhook_url TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                next_retry_at TEXT,
+                retry_count INTEGER NOT NULL DEFAULT 0
+              )
+            `);
+
+            db.run(`
+              CREATE TABLE IF NOT EXISTS attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id TEXT NOT NULL,
+                attempted_at TEXT NOT NULL,
+                http_status INTEGER,
+                outcome TEXT NOT NULL,
+                FOREIGN KEY (event_id) REFERENCES events (id) ON DELETE CASCADE
+              )
+            `, (tableErr) => {
+              if (tableErr) return reject(tableErr);
+              console.log(`[Database] SQLite connected at "${dbPath}".`);
+              resolve(db);
+            });
           });
         });
       });
     });
-  });
+  }
 }
 
 /**
  * Get active database instance
  */
 function getDb() {
-  if (!db) {
+  if (!db && !pgPool) {
     throw new Error('Database not initialized. Call initDb() first.');
   }
-  return db;
+  return isPg ? pgPool : db;
 }
 
 /**
  * Create a new event
  */
-function createEvent({ type, payload, webhook_url }) {
-  return new Promise((resolve, reject) => {
-    const database = getDb();
-    const id = 'evt_' + (require('crypto').randomUUID ? require('crypto').randomUUID() : Date.now() + Math.random().toString(36).substring(2, 9));
-    const now = new Date().toISOString();
-    const payloadStr = typeof payload === 'string' ? payload : JSON.stringify(payload);
-    
-    // Status is pending, next_retry_at is set to now for immediate first attempt
-    const query = `
-      INSERT INTO events (id, type, payload, webhook_url, status, created_at, next_retry_at, retry_count)
-      VALUES (?, ?, ?, ?, 'pending', ?, ?, 0)
-    `;
+async function createEvent({ type, payload, webhook_url }) {
+  const id = 'evt_' + (require('crypto').randomUUID ? require('crypto').randomUUID() : Date.now() + Math.random().toString(36).substring(2, 9));
+  const now = new Date().toISOString();
+  const payloadStr = typeof payload === 'string' ? payload : JSON.stringify(payload);
 
-    database.run(query, [id, type, payloadStr, webhook_url, now, now], function(err) {
-      if (err) return reject(err);
-      getEventById(id).then(resolve).catch(reject);
-    });
-  });
+  const sql = `
+    INSERT INTO events (id, type, payload, webhook_url, status, created_at, next_retry_at, retry_count)
+    VALUES (?, ?, ?, ?, 'pending', ?, ?, 0)
+  `;
+
+  await query(sql, [id, type, payloadStr, webhook_url, now, now]);
+  return getEventById(id);
 }
 
 /**
  * Get event by ID with its attempts list
  */
-function getEventById(id) {
-  return new Promise((resolve, reject) => {
-    const database = getDb();
-    
-    database.get('SELECT * FROM events WHERE id = ?', [id], (err, eventRow) => {
-      if (err) return reject(err);
-      if (!eventRow) return resolve(null);
+async function getEventById(id) {
+  const eventRows = await query('SELECT * FROM events WHERE id = ?', [id]);
+  if (!eventRows || eventRows.length === 0) return null;
 
-      database.all(
-        'SELECT attempted_at, http_status, outcome FROM attempts WHERE event_id = ? ORDER BY id ASC',
-        [id],
-        (attemptErr, attemptRows) => {
-          if (attemptErr) return reject(attemptErr);
+  const eventRow = eventRows[0];
+  const attemptRows = await query(
+    'SELECT attempted_at, http_status, outcome FROM attempts WHERE event_id = ? ORDER BY id ASC',
+    [id]
+  );
 
-          let parsedPayload;
-          try {
-            parsedPayload = JSON.parse(eventRow.payload);
-          } catch (e) {
-            parsedPayload = eventRow.payload;
-          }
+  let parsedPayload;
+  try {
+    parsedPayload = JSON.parse(eventRow.payload);
+  } catch (e) {
+    parsedPayload = eventRow.payload;
+  }
 
-          const attempts = (attemptRows || []).map(row => ({
-            attempted_at: row.attempted_at,
-            http_status: row.http_status,
-            outcome: row.outcome
-          }));
+  const attempts = (attemptRows || []).map(row => ({
+    attempted_at: row.attempted_at,
+    http_status: row.http_status,
+    outcome: row.outcome
+  }));
 
-          resolve({
-            id: eventRow.id,
-            type: eventRow.type,
-            payload: parsedPayload,
-            webhook_url: eventRow.webhook_url,
-            status: eventRow.status,
-            created_at: eventRow.created_at,
-            attempts: attempts
-          });
-        }
-      );
-    });
-  });
+  return {
+    id: eventRow.id,
+    type: eventRow.type,
+    payload: parsedPayload,
+    webhook_url: eventRow.webhook_url,
+    status: eventRow.status,
+    created_at: eventRow.created_at,
+    attempts: attempts
+  };
 }
 
 /**
  * Get all events with their attempts
  */
-function getAllEvents() {
-  return new Promise((resolve, reject) => {
-    const database = getDb();
-
-    database.all('SELECT id FROM events ORDER BY created_at DESC', [], async (err, rows) => {
-      if (err) return reject(err);
-      if (!rows || rows.length === 0) return resolve([]);
-
-      try {
-        const events = await Promise.all(rows.map(row => getEventById(row.id)));
-        resolve(events);
-      } catch (e) {
-        reject(e);
-      }
-    });
-  });
+async function getAllEvents() {
+  const rows = await query('SELECT id FROM events ORDER BY created_at DESC', []);
+  if (!rows || rows.length === 0) return [];
+  return Promise.all(rows.map(row => getEventById(row.id)));
 }
 
 /**
  * Get pending/failed events due for delivery
  */
-function getDueEvents() {
-  return new Promise((resolve, reject) => {
-    const database = getDb();
-    const nowIso = new Date().toISOString();
-
-    const query = `
-      SELECT * FROM events 
-      WHERE status IN ('pending', 'failed') 
-        AND next_retry_at IS NOT NULL 
-        AND next_retry_at <= ? 
-        AND retry_count < 4
-      ORDER BY created_at ASC
-    `;
-
-    database.all(query, [nowIso], (err, rows) => {
-      if (err) return reject(err);
-      resolve(rows || []);
-    });
-  });
+async function getDueEvents() {
+  const nowIso = new Date().toISOString();
+  const sql = `
+    SELECT * FROM events 
+    WHERE status IN ('pending', 'failed') 
+      AND next_retry_at IS NOT NULL 
+      AND next_retry_at <= ? 
+      AND retry_count < 4
+    ORDER BY created_at ASC
+  `;
+  return query(sql, [nowIso]);
 }
 
 /**
  * Record a delivery attempt
  */
-function recordAttempt(eventId, attemptedAt, httpStatus, outcome) {
-  return new Promise((resolve, reject) => {
-    const database = getDb();
-    const query = `
-      INSERT INTO attempts (event_id, attempted_at, http_status, outcome)
-      VALUES (?, ?, ?, ?)
-    `;
-    database.run(query, [eventId, attemptedAt, httpStatus, outcome], function(err) {
-      if (err) return reject(err);
-      resolve(this.lastID);
-    });
-  });
+async function recordAttempt(eventId, attemptedAt, httpStatus, outcome) {
+  const sql = `
+    INSERT INTO attempts (event_id, attempted_at, http_status, outcome)
+    VALUES (?, ?, ?, ?)
+  `;
+  const result = await query(sql, [eventId, attemptedAt, httpStatus, outcome]);
+  return result ? result.lastID : null;
 }
 
 /**
  * Update event status and scheduling details
  */
-function updateEventStatus(eventId, status, nextRetryAt, retryCount) {
-  return new Promise((resolve, reject) => {
-    const database = getDb();
-    const query = `
-      UPDATE events 
-      SET status = ?, next_retry_at = ?, retry_count = ?
-      WHERE id = ?
-    `;
-    database.run(query, [status, nextRetryAt, retryCount, eventId], function(err) {
-      if (err) return reject(err);
-      resolve(this.changes);
-    });
-  });
+async function updateEventStatus(eventId, status, nextRetryAt, retryCount) {
+  const sql = `
+    UPDATE events 
+    SET status = ?, next_retry_at = ?, retry_count = ?
+    WHERE id = ?
+  `;
+  const result = await query(sql, [status, nextRetryAt, retryCount, eventId]);
+  return result ? (result.changes || result.rowCount) : 0;
 }
 
 /**
  * Reset a dead event for manual retry
  */
-function resetEventForRetry(eventId) {
-  return new Promise((resolve, reject) => {
-    const database = getDb();
-    const nowIso = new Date().toISOString();
-
-    // Reset status to pending, next_retry_at to now, and retry_count to 0 so fresh retry cycle starts
-    const query = `
-      UPDATE events 
-      SET status = 'pending', next_retry_at = ?, retry_count = 0 
-      WHERE id = ? AND status = 'dead'
-    `;
-
-    database.run(query, [nowIso, eventId], function(err) {
-      if (err) return reject(err);
-      if (this.changes === 0) return resolve(false);
-      resolve(true);
-    });
-  });
+async function resetEventForRetry(eventId) {
+  const nowIso = new Date().toISOString();
+  const sql = `
+    UPDATE events 
+    SET status = 'pending', next_retry_at = ?, retry_count = 0 
+    WHERE id = ? AND status = 'dead'
+  `;
+  const result = await query(sql, [nowIso, eventId]);
+  const affected = result ? (result.changes || result.rowCount) : 0;
+  return affected > 0;
 }
 
 /**
  * Close database connection
  */
-function closeDb() {
-  return new Promise((resolve) => {
-    if (db) {
-      db.close(() => {
-        db = null;
-        resolve();
-      });
-    } else {
-      resolve();
-    }
-  });
+async function closeDb() {
+  if (isPg && pgPool) {
+    await pgPool.end();
+    pgPool = null;
+  } else if (db) {
+    await new Promise(r => db.close(r));
+    db = null;
+  }
 }
 
 module.exports = {
   initDb,
   getDb,
+  query,
   createEvent,
   getEventById,
   getAllEvents,
